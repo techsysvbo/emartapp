@@ -4,7 +4,7 @@ COPY ./ ./client
 RUN cd client && npm install && npm run build --prod
 
 # Use official nginx image as the base image
-FROM nginx:latest
+FROM nginx:1.29.4-trixie
 
 # Copy the build output to replace the default nginx contents.
 COPY --from=web-build /usr/src/app/client/dist/client/ /usr/share/nginx/html
