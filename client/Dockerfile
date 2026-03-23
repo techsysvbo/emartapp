@@ -1,14 +1,16 @@
-FROM node:14 AS web-build
+FROM node:18-alpine AS web-build
 WORKDIR /usr/src/app
-COPY ./ ./client
-RUN cd client && npm install && npm run build --prod
+COPY ./ ./client/
+RUN cd client && npm ci && npm run build --prod
 
-# Use official nginx image as the base image
-FROM nginx:latest
+FROM nginx:1.25-alpine
+RUN addgroup -S emartgroup && adduser -S emartuser -G emartgroup
 
-# Copy the build output to replace the default nginx contents.
 COPY --from=web-build /usr/src/app/client/dist/client/ /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
-# Expose port 4200
+RUN chown -R emartuser:emartgroup /usr/share/nginx/html \
+    && chmod -R 755 /usr/share/nginx/html
+
 EXPOSE 4200
+

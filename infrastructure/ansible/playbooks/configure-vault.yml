@@ -1,0 +1,60 @@
+---
+# E-MART – Configure Vault on a target host
+# Responsibility: Install Vault CLI, copy TLS CA cert, set env vars.
+# NOTE: Terraform provisions infrastructure; Ansible configures the OS/runtime.
+#
+# Usage:
+#   ansible-playbook -i infrastructure/ansible/inventory/hosts.yml \
+#     infrastructure/ansible/playbooks/configure-vault.yml \
+#     --extra-vars "vault_addr=https://127.0.0.1:8200"
+- name: Configure HashiCorp Vault CLI on target hosts
+  hosts: dev
+  become: true
+  vars:
+    vault_version: "1.16.2"
+    vault_addr: "https://127.0.0.1:8200"
+    vault_skip_verify: "false"
+
+  tasks:
+    - name: Install unzip (required by Vault installer)
+      ansible.builtin.package:
+        name: unzip
+        state: present
+
+    - name: Download Vault binary
+      ansible.builtin.get_url:
+        url: "https://releases.hashicorp.com/vault/{{ vault_version }}/vault_{{ vault_version }}_linux_amd64.zip"
+        dest: "/tmp/vault_{{ vault_version }}.zip"
+        mode: "0644"
+      register: vault_download
+
+    - name: Unzip Vault
+      ansible.builtin.unarchive:
+        src: "/tmp/vault_{{ vault_version }}.zip"
+        dest: /usr/local/bin/
+        remote_src: true
+      when: vault_download.changed
+
+    - name: Set Vault binary permissions
+      ansible.builtin.file:
+        path: /usr/local/bin/vault
+        mode: "0755"
+        owner: root
+        group: root
+
+    - name: Write Vault environment profile
+      ansible.builtin.copy:
+        dest: /etc/profile.d/vault.sh
+        mode: "0644"
+        content: |
+          export VAULT_ADDR="{{ vault_addr }}"
+          export VAULT_SKIP_VERIFY="{{ vault_skip_verify }}"
+
+    - name: Verify Vault CLI version
+      ansible.builtin.command: vault version
+      register: vault_version_output
+      changed_when: false
+
+    - name: Print Vault version
+      ansible.builtin.debug:
+        msg: "{{ vault_version_output.stdout }}"

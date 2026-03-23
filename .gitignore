@@ -1,0 +1,46 @@
+# ── Secrets / environment files ──────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+*.secret
+
+# ── Node.js ───────────────────────────────────────────────────────────────────
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ── Angular build output ──────────────────────────────────────────────────────
+client/dist/
+client/.angular/
+client/node_modules/
+
+# ── Java / Maven ──────────────────────────────────────────────────────────────
+javaapi/target/
+*.class
+*.jar
+*.war
+*.ear
+
+# ── Docker ────────────────────────────────────────────────────────────────────
+docker-compose.override.yml
+
+# ── Terraform ─────────────────────────────────────────────────────────────────
+infrastructure/terraform/**/.terraform/
+infrastructure/terraform/**/*.tfstate
+infrastructure/terraform/**/*.tfstate.backup
+infrastructure/terraform/**/*.tfvars
+!infrastructure/terraform/**/*.tfvars.example
+infrastructure/terraform/**/.terraform.lock.hcl
+
+# ── IDE / OS ──────────────────────────────────────────────────────────────────
+.idea/
+*.iml
+.metadata/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# ── Vault generated files ────────────────────────────────────────────────────
+infrastructure/vault/scripts/.vault-token

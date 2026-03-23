@@ -1,0 +1,101 @@
+name: CD – Build, Push & Deploy
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        default: "dev"
+        type: choice
+        options: [dev, staging, prod]
+
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: false  # never cancel a running deploy
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ${{ github.repository_owner }}/emartapp
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────
+  # Build and push all service images to GHCR
+  # ─────────────────────────────────────────────────────────────────────────
+  build-push:
+    name: Build & Push – ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        service: [nodeapi, client, javaapi]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/${{ matrix.service }}
+          tags: |
+            type=sha,prefix=,suffix=,format=short
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: ./${{ matrix.service }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Deploy to dev via Docker Compose (self-hosted runner or SSH target)
+  # Requires GitHub Actions secrets:
+  #   DEPLOY_HOST  – hostname or IP of the deployment target
+  #   DEPLOY_USER  – SSH username
+  #   DEPLOY_KEY   – SSH private key (ED25519 recommended)
+  # ─────────────────────────────────────────────────────────────────────────
+  deploy-dev:
+    name: Deploy to Dev
+    runs-on: ubuntu-latest
+    needs: build-push
+    environment: dev
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.event.inputs.environment == 'dev'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          script: |
+            set -euo pipefail
+            cd /opt/emartapp
+            git pull origin main
+            # Refresh .env from Vault (vault-sync.sh must be pre-configured on host)
+            if [ -f scripts/vault-sync.sh ]; then
+              VAULT_TOKEN="${{ secrets.VAULT_TOKEN }}" \
+              VAULT_ADDR="${{ secrets.VAULT_ADDR }}" \
+              bash scripts/vault-sync.sh
+            fi
+            IMAGE_TAG=$(git rev-parse --short HEAD)
+            export IMAGE_TAG
+            docker compose pull
+            docker compose up -d --remove-orphans
+            docker image prune -f

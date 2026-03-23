@@ -1,0 +1,39 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    environment: 'local'
+    application: 'emartapp'
+
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Node.js API – requires prom-client instrumentation (future phase)
+  - job_name: 'emartapp-nodeapi'
+    static_configs:
+      - targets: ['api:5000']
+    metrics_path: '/metrics'
+
+  # Spring Boot API – requires micrometer/actuator (future phase)
+  - job_name: 'emartapp-webapi'
+    static_configs:
+      - targets: ['webapi:9000']
+    metrics_path: '/actuator/prometheus'
+
+  # Nginx – requires nginx-prometheus-exporter sidecar (future phase)
+  - job_name: 'nginx'
+    static_configs:
+      - targets: ['nginx:9113']
+
+  # MongoDB exporter (future phase – uncomment when exporter is added)
+  # - job_name: 'mongodb'
+  #   static_configs:
+  #     - targets: ['mongodb-exporter:9216']
+
+  # MySQL exporter (future phase – uncomment when exporter is added)
+  # - job_name: 'mysql'
+  #   static_configs:
+  #     - targets: ['mysql-exporter:9104']

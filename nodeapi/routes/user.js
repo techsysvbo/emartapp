@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const nodemailer = require("nodemailer");
 
 const secretOrKey = require("../config/keys").secretOrKey;
 const User = require("../models/User"); // User model
@@ -9,9 +10,46 @@ const User = require("../models/User"); // User model
 const validateRegisterInput = require("../validation/register"); // register validation
 const validateLoginInput = require("../validation/login"); // login validation
 
+// ---------------------------------------------------------------------------
+// SMTP transport – credentials are loaded from environment variables only.
+// Set SMTP_ENABLED=false to disable email notifications (e.g. local dev).
+// ---------------------------------------------------------------------------
+function sendMail(to, subject, text) {
+  if (process.env.SMTP_ENABLED === "false" || !process.env.SMTP_USER) {
+    return; // email notifications disabled or not configured
+  }
+  const sender = nodemailer.createTransport({
+    service: process.env.SMTP_SERVICE || "gmail",
+    type: "SMTP",
+    host: process.env.SMTP_HOST || "smtp.gmail.com",
+    auth: {
+      user: process.env.SMTP_USER,
+      pass: process.env.SMTP_PASS,
+    },
+  });
+  sender.sendMail(
+    { from: process.env.SMTP_USER, to, subject, text },
+    (error, info) => {
+      if (error) {
+        console.error("Mail send error:", error.message);
+      } else {
+        console.log("Email sent:", info.response);
+      }
+    }
+  );
+}
+
+// Admin role is controlled via a comma-separated env var only, e.g.:
+//   ADMIN_EMAILS=admin@example.com,ops@example.com
+// User-supplied name or email fields never grant admin access automatically.
+const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || "")
+  .split(",")
+  .map((e) => e.trim().toLowerCase())
+  .filter(Boolean);
+
 //----------------------------------Routes----------------------------------//
 
-// @route   POST /user/register
+// @route   POST /api/user/register
 // @desc    Register user
 // @access  Public
 router.post("/register", (req, res) => {
@@ -27,60 +65,17 @@ router.post("/register", (req, res) => {
           errors.cardId = "Personal ID already exists";
           return res.status(400).json({ success: false, message: errors.cardId });
         } else {
+          const urole = ADMIN_EMAILS.includes(req.body.email.toLowerCase()) ? 1 : 0;
 
-///mailing
-
-const nodemailer = require("nodemailer");
- 
-var sender = nodemailer.createTransport({
-  service: 'gmail',
-  type: "SMTP",
-  host: "smtp.gmail.com",
-  auth: {
-    user: 'keshav.visu@gmail.com',
-    pass: '271298318929'
-  }
-});
- 
-var mail = {
-  from: "keshav.visu@gmail.com",
-  to: req.body.email,
-  subject: "E_MART Registration Successfull",
-  text: "Dear "+req.body.fname+"! Your Registration Finished Successfully.\nWelcome to E-MART Family.\n Thankyou!"
-};
- 
-sender.sendMail(mail, function(error, info) {
-  if (error) {
-    console.log(error);
-  } else {
-    console.log("Email sent successfully: "
-                 + info.response);
-  }
-});
-
-
-
-// mailing end
-
-          // Admin Role
-             urole=0;
-              if(req.body.fname=="admin"||req.body.fname=="ADMIN"||
-              req.body.lname=="admin"||req.body.lname=="ADMIN"||req.body.email=="admin@gmail.com"||
-              req.body.email=="admin@mail.com"||req.body.email=="ADMIN@gmail.com"||
-              req.body.email=="ADMIN@mail.com") {urole =1};
-          // Admin Role
-          
           const newUser = new User({
-
-
-             role:urole,
+            role: urole,
             cardId: req.body.cardId,
             fname: req.body.fname,
             lname: req.body.lname,
             email: req.body.email,
             password: req.body.password,
             city: req.body.city,
-            street: req.body.street
+            street: req.body.street,
           });
           bcrypt.genSalt(10, (err, salt) => {
             bcrypt.hash(newUser.password, salt, (err, hash) => {
@@ -88,8 +83,17 @@ sender.sendMail(mail, function(error, info) {
               newUser.password = hash;
               newUser
                 .save()
-                .then(user => res.json({ success: true, user }))
-                .catch(err => res.status(404).json({ success: false, message: "Could not register user" }));
+                .then(user => {
+                  sendMail(
+                    req.body.email,
+                    "E-MART Registration Successful",
+                    `Dear ${req.body.fname}! Your registration finished successfully.\nWelcome to E-MART.\nThank you!`
+                  );
+                  res.json({ success: true, user });
+                })
+                .catch(() =>
+                  res.status(404).json({ success: false, message: "Could not register user" })
+                );
             });
           });
         }
@@ -98,12 +102,11 @@ sender.sendMail(mail, function(error, info) {
   });
 });
 
-// @route   POST /user/login
+// @route   POST /api/user/login
 // @desc    Login user | Returning JWT Token
 // @access  Public
 router.post("/login", (req, res) => {
   const { errors, isValid } = validateLoginInput(req.body);
-  // if (!isValid) return res.status(400).json({ success: false, message: errors });
   const email = req.body.email;
   const password = req.body.password;
   User.findOne({ email }).then(user => {
@@ -113,55 +116,16 @@ router.post("/login", (req, res) => {
     }
     bcrypt.compare(password, user.password).then(isMatch => {
       if (isMatch) {
-        // Create JWT payload
-        const payload = {
-          id: user.id,
-          fname: user.fname,
-          lname: user.lname
-        };
-        // Sign token
+        const payload = { id: user.id, fname: user.fname, lname: user.lname };
         jwt.sign(payload, secretOrKey, (err, token) => {
           if (err) throw err;
-          res.json({ success: true, message: "Token was assigned", token: token, user: user });
+          sendMail(
+            email,
+            "E-MART Login Alert",
+            `Dear ${email}, you logged in successfully at ${new Date().toISOString()}`
+          );
+          res.json({ success: true, message: "Token was assigned", token, user });
         });
-
-
-///mailing
-
-const nodemailer = require("nodemailer");
- 
-var sender = nodemailer.createTransport({
-  service: 'gmail',
-  type: "SMTP",
-  host: "smtp.gmail.com",
-  auth: {
-    user: 'keshav.visu@gmail.com',
-    pass: '21312312312'
-  }
-});
- 
-var mail = {
-  from: "keshav.visu@gmail.com",
-  to: email,
-  subject: "Login alert mail from E-Mart",
-  text: "Dear "+email +" , you have Loggedin successfully at "+Date.now()
-};
- 
-sender.sendMail(mail, function(error, info) {
-  if (error) {
-    console.log(error);
-  } else {
-    console.log("Email sent successfully: "
-                 + info.response);
-  }
-});
-
-
-
-// mailing end
-
-
-
       } else {
         errors.password = "Password is incorrect";
         return res.status(400).json({ success: false, message: errors.password });

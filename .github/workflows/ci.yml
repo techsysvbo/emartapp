@@ -1,0 +1,160 @@
+name: CI – Build, Test & Scan
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main, master, develop]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ${{ github.repository_owner }}/emartapp
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────
+  # Node.js API – lint, audit, test, build image
+  # ─────────────────────────────────────────────────────────────────────────
+  nodeapi:
+    name: Node.js API
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: nodeapi
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+          cache: "npm"
+          cache-dependency-path: nodeapi/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run dependency audit
+        run: npm audit --audit-level=high || true   # non-blocking for now; harden in phase 2
+
+      - name: Run tests
+        run: npm test --if-present
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./nodeapi
+          push: false
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/nodeapi:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Angular frontend – lint, build, image
+  # ─────────────────────────────────────────────────────────────────────────
+  client:
+    name: Angular Client
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+          cache: "npm"
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run dependency audit
+        run: npm audit --audit-level=high || true
+
+      - name: Build production bundle
+        run: npm run build -- --configuration=production
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./client
+          push: false
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/client:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Spring Boot – build, test, image
+  # ─────────────────────────────────────────────────────────────────────────
+  javaapi:
+    name: Spring Boot API
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: javaapi
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
+          cache: "maven"
+
+      - name: Build and test with Maven
+        run: ./mvnw verify -B
+        env:
+          MYSQL_PASSWORD: ci-placeholder  # application.properties reads from env; DB not available in CI
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./javaapi
+          push: false
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/javaapi:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Image security scan (Trivy) – runs after each image build
+  # ─────────────────────────────────────────────────────────────────────────
+  trivy-scan:
+    name: Trivy Image Scan
+    runs-on: ubuntu-latest
+    needs: [nodeapi, client, javaapi]
+    strategy:
+      matrix:
+        service: [nodeapi, client, javaapi]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build ${{ matrix.service }} image for scanning
+        uses: docker/build-push-action@v5
+        with:
+          context: ./${{ matrix.service }}
+          push: false
+          load: true
+          tags: emartapp/${{ matrix.service }}:scan
+
+      - name: Trivy – scan ${{ matrix.service }}
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: emartapp/${{ matrix.service }}:scan
+          format: sarif
+          output: trivy-${{ matrix.service }}.sarif
+          severity: CRITICAL,HIGH
+          exit-code: "0"  # report only; set to "1" to block in phase 2
+
+      - name: Upload Trivy SARIF report
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-${{ matrix.service }}.sarif
+          category: trivy-${{ matrix.service }}
