@@ -61,7 +61,7 @@ services:
       emongo:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "node", "-e", "require('http').get('http://localhost:5000/', r => process.exit(r.statusCode >= 500 ? 1 : 0)).on('error', () => process.exit(1))"]
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:5000/"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -86,7 +86,7 @@ services:
       emartdb:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/9000 && echo -e 'GET /webapi/books HTTP/1.0\r\n\r\n' >&3 && grep -q 'HTTP' <&3"]
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9000/webapi/books"]
       interval: 30s
       timeout: 10s
       retries: 3

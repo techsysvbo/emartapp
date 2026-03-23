@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main, master, develop]
 
+# Default to minimal read-only permissions for all jobs; override where needed.
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -21,6 +25,8 @@ jobs:
   nodeapi:
     name: Node.js API
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     defaults:
       run:
         working-directory: nodeapi
@@ -58,6 +64,8 @@ jobs:
   client:
     name: Angular Client
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     defaults:
       run:
         working-directory: client
@@ -95,6 +103,8 @@ jobs:
   javaapi:
     name: Spring Boot API
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     defaults:
       run:
         working-directory: javaapi
@@ -129,6 +139,9 @@ jobs:
     name: Trivy Image Scan
     runs-on: ubuntu-latest
     needs: [nodeapi, client, javaapi]
+    permissions:
+      contents: read
+      security-events: write  # required to upload SARIF results
     strategy:
       matrix:
         service: [nodeapi, client, javaapi]
