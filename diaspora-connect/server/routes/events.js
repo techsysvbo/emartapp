@@ -1,7 +1,7 @@
 const router = require('express').Router();
 const { body, validationResult } = require('express-validator');
 const { auth } = require('../middleware/auth');
-const { upload } = require('../config/cloudinary');
+const { upload, uploadToCloudinary } = require('../config/cloudinary');
 const Event = require('../models/Event');
 
 // GET /api/events
@@ -45,7 +45,7 @@ router.post(
         title, description, organizer: req.user._id, group: group || null,
         eventType, location, isOnline: isOnline === 'true', meetingLink,
         country, region, industry, startDate, endDate,
-        imageUrl: req.file ? req.file.path : '',
+        imageUrl: req.file ? await uploadToCloudinary(req.file.buffer) : '',
         maxAttendees: Number(maxAttendees) || 0,
         attendees: [req.user._id],
       });

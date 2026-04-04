@@ -1,6 +1,6 @@
 const router = require('express').Router();
 const { auth } = require('../middleware/auth');
-const { upload } = require('../config/cloudinary');
+const { upload, uploadToCloudinary } = require('../config/cloudinary');
 const User = require('../models/User');
 
 // GET /api/users/me
@@ -28,9 +28,10 @@ router.patch('/me', auth, async (req, res, next) => {
 router.post('/me/avatar', auth, upload.single('avatar'), async (req, res, next) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    const avatarUrl = await uploadToCloudinary(req.file.buffer);
     const user = await User.findByIdAndUpdate(
       req.user._id,
-      { avatarUrl: req.file.path },
+      { avatarUrl },
       { new: true }
     );
     res.json({ avatarUrl: user.avatarUrl });

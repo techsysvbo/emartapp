@@ -1,7 +1,7 @@
 const router = require('express').Router();
 const { body, validationResult } = require('express-validator');
 const { auth } = require('../middleware/auth');
-const { upload } = require('../config/cloudinary');
+const { upload, uploadToCloudinary } = require('../config/cloudinary');
 const Post = require('../models/Post');
 
 // GET /api/posts — public feed (auth required)
@@ -36,10 +36,11 @@ router.post(
       if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
 
       const { content, region, country, profession, industry, tags, group } = req.body;
+      const imageUrl = req.file ? await uploadToCloudinary(req.file.buffer) : '';
       const post = await Post.create({
         author: req.user._id,
         content,
-        imageUrl: req.file ? req.file.path : '',
+        imageUrl,
         region: region || '',
         country: country || '',
         profession: profession || '',

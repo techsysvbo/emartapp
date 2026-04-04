@@ -1,7 +1,7 @@
 const router = require('express').Router();
 const { body, validationResult } = require('express-validator');
 const { auth } = require('../middleware/auth');
-const { upload } = require('../config/cloudinary');
+const { upload, uploadToCloudinary } = require('../config/cloudinary');
 const Group = require('../models/Group');
 const User = require('../models/User');
 
@@ -47,7 +47,7 @@ router.post(
         name, description, category, homeCountry, hostCountry, region,
         industry: industry || '', profession: profession || '',
         educationLevel: educationLevel || '',
-        avatarUrl: req.file ? req.file.path : '',
+        avatarUrl: req.file ? await uploadToCloudinary(req.file.buffer) : '',
         creator: req.user._id,
         admins: [req.user._id],
         members: [req.user._id],
@@ -108,7 +108,7 @@ router.post(
       group.posts.push({
         author: req.user._id,
         content: req.body.content,
-        imageUrl: req.file ? req.file.path : '',
+        imageUrl: req.file ? await uploadToCloudinary(req.file.buffer) : '',
       });
       await group.save();
 
