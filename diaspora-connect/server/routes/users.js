@@ -71,11 +71,15 @@ router.get('/', auth, async (req, res, next) => {
   try {
     const { country, industry, educationLevel, isMentor, q, page = 1, limit = 20 } = req.query;
     const filter = { isBanned: false };
-    if (country) filter.$or = [{ countryOfOrigin: country }, { countryOfResidence: country }];
+    const andClauses = [];
+    if (country) {
+      andClauses.push({ $or: [{ countryOfOrigin: country }, { countryOfResidence: country }] });
+    }
     if (industry) filter.industry = industry;
     if (educationLevel) filter.educationLevel = educationLevel;
     if (isMentor === 'true') filter.isMentor = true;
-    if (q) filter.$text = { $search: q };
+    if (q) filter.$text = { $search: String(q).slice(0, 100) };
+    if (andClauses.length) filter.$and = andClauses;
 
     const users = await User.find(filter)
       .select('name profession industry educationLevel countryOfOrigin countryOfResidence avatarUrl isMentor')

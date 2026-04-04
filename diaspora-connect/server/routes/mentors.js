@@ -2,6 +2,9 @@ const router = require('express').Router();
 const { auth } = require('../middleware/auth');
 const User = require('../models/User');
 
+// Escape special regex characters to prevent regex injection
+const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 // GET /api/mentors — browse mentors, filterable
 router.get('/', auth, async (req, res, next) => {
   try {
@@ -12,10 +15,11 @@ router.get('/', auth, async (req, res, next) => {
     if (countryOfOrigin) filter.countryOfOrigin = countryOfOrigin;
     if (countryOfResidence) filter.countryOfResidence = countryOfResidence;
     if (q) {
+      const safe = escapeRegex(String(q).slice(0, 100));
       filter.$or = [
-        { name: new RegExp(q, 'i') },
-        { profession: new RegExp(q, 'i') },
-        { mentorBio: new RegExp(q, 'i') },
+        { name: new RegExp(safe, 'i') },
+        { profession: new RegExp(safe, 'i') },
+        { mentorBio: new RegExp(safe, 'i') },
       ];
     }
 

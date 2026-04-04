@@ -17,6 +17,7 @@ const messageRoutes = require('./routes/messages');
 const mentorRoutes = require('./routes/mentors');
 
 const registerSocketHandlers = require('./socket/handlers');
+const { generalLimiter } = require('./middleware/rateLimiter');
 
 const app = express();
 const httpServer = http.createServer(app);
@@ -37,6 +38,7 @@ app.use(cors({ origin: process.env.CLIENT_URL || 'http://localhost:5173', creden
 app.use(morgan('combined'));
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true }));
+app.use('/api', generalLimiter); // global rate limiter for all API routes
 
 // Health check
 app.get('/api/health', (_req, res) => res.json({ status: 'ok', ts: new Date() }));
