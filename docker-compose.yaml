@@ -42,7 +42,7 @@ services:
       - "80:80"
 
   emongo:
-    image: mongo:4
+    image: mongo:7
     container_name: emongo
     environment:
       - MONGO_INITDB_DATABASE=epoc

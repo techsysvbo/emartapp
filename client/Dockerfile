@@ -1,4 +1,4 @@
-FROM node:14 AS web-build
+FROM node:18 AS web-build
 WORKDIR /usr/src/app
 COPY ./ ./client
 RUN cd client && npm install && npm run build --prod
