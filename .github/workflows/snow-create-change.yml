@@ -1,0 +1,153 @@
+name: ServiceNow – Create Change Request
+
+# Triggered when a PR review is submitted.
+# The job only proceeds when the PR targets `main` AND the review state is `approved`.
+on:
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  contents: read
+  pull-requests: write   # post PR comment
+  statuses: write        # set commit status
+
+jobs:
+  create-change-request:
+    name: Create ServiceNow Change Request
+    if: |
+      github.event.review.state == 'approved' &&
+      github.event.pull_request.base.ref == 'main'
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Set snow-approval-status → pending ─────────────────────────────
+      - name: Set commit status to pending
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          curl --fail-with-body -s -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${REPO}/statuses/${SHA}" \
+            -d '{
+              "state": "pending",
+              "context": "snow-approval-status",
+              "description": "Awaiting ServiceNow Change Request approval",
+              "target_url": ""
+            }'
+
+      # ── 2. Collect PR metadata ────────────────────────────────────────────
+      - name: Build ServiceNow payload
+        id: payload
+        env:
+          PR_NUMBER:     ${{ github.event.pull_request.number }}
+          REPO:          ${{ github.repository }}
+          SOURCE_BRANCH: ${{ github.event.pull_request.head.ref }}
+          TARGET_BRANCH: ${{ github.event.pull_request.base.ref }}
+          PR_URL:        ${{ github.event.pull_request.html_url }}
+          SHA:           ${{ github.event.pull_request.head.sha }}
+          PR_TITLE:      ${{ github.event.pull_request.title }}
+          APPROVER:      ${{ github.event.review.user.login }}
+        run: |
+          PAYLOAD=$(jq -n \
+            --arg pr_number    "${PR_NUMBER}" \
+            --arg repo         "${REPO}" \
+            --arg source_branch "${SOURCE_BRANCH}" \
+            --arg target_branch "${TARGET_BRANCH}" \
+            --arg pr_url       "${PR_URL}" \
+            --arg sha          "${SHA}" \
+            --arg pr_title     "${PR_TITLE}" \
+            --arg approver     "${APPROVER}" \
+            '{
+              pr_number:     $pr_number,
+              repository:    $repo,
+              source_branch: $source_branch,
+              target_branch: $target_branch,
+              pr_url:        $pr_url,
+              commit_sha:    $sha,
+              pr_title:      $pr_title,
+              github_approvers: [$approver],
+              requested_by:  "github-actions",
+              short_description: ("GitHub PR #\($pr_number) – \($pr_title)"),
+              description: ("Production change request triggered by GitHub PR #\($pr_number).\nRepository: \($repo)\nBranch: \($source_branch) → \($target_branch)\nApproved by: \($approver)\nPR URL: \($pr_url)\nCommit: \($sha)")
+            }')
+          echo "payload=${PAYLOAD}" >> "$GITHUB_OUTPUT"
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+
+      # ── 3. POST to ServiceNow Table API ───────────────────────────────────
+      - name: Create Change Request in ServiceNow
+        id: snow
+        env:
+          SNOW_INSTANCE: ${{ secrets.SNOW_INSTANCE }}
+          SNOW_USERNAME: ${{ secrets.SNOW_USERNAME }}
+          SNOW_PASSWORD: ${{ secrets.SNOW_PASSWORD }}
+          PAYLOAD:       ${{ steps.payload.outputs.payload }}
+        run: |
+          RESPONSE=$(curl --fail-with-body -s -X POST \
+            -u "${SNOW_USERNAME}:${SNOW_PASSWORD}" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            "https://${SNOW_INSTANCE}.service-now.com/api/now/table/change_request" \
+            -d "${PAYLOAD}")
+
+          SYS_ID=$(echo "${RESPONSE}" | jq -r '.result.sys_id // empty')
+          CR_NUMBER=$(echo "${RESPONSE}" | jq -r '.result.number // empty')
+
+          if [[ -z "${SYS_ID}" ]]; then
+            echo "ERROR: Failed to create Change Request. ServiceNow response:"
+            echo "${RESPONSE}"
+            exit 1
+          fi
+
+          echo "sys_id=${SYS_ID}" >> "$GITHUB_OUTPUT"
+          echo "cr_number=${CR_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "ServiceNow Change Request created: ${CR_NUMBER} (${SYS_ID})"
+
+      # ── 4. Store PR→CR link back in ServiceNow (update record) ───────────
+      - name: Link GitHub PR URL on Change Request
+        env:
+          SNOW_INSTANCE: ${{ secrets.SNOW_INSTANCE }}
+          SNOW_USERNAME: ${{ secrets.SNOW_USERNAME }}
+          SNOW_PASSWORD: ${{ secrets.SNOW_PASSWORD }}
+          SYS_ID:        ${{ steps.snow.outputs.sys_id }}
+          PR_URL:        ${{ github.event.pull_request.html_url }}
+          SHA:           ${{ steps.payload.outputs.sha }}
+          REPO:          ${{ github.repository }}
+          PR_NUMBER:     ${{ steps.payload.outputs.pr_number }}
+        run: |
+          # Store GitHub metadata in work_notes for auditability
+          WORK_NOTE="GitHub integration metadata:\n- PR URL: ${PR_URL}\n- Commit SHA: ${SHA}\n- Repository: ${REPO}\n- Callback repo_dispatch event: snow-approval-decision"
+          curl --fail-with-body -s -X PATCH \
+            -u "${SNOW_USERNAME}:${SNOW_PASSWORD}" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            "https://${SNOW_INSTANCE}.service-now.com/api/now/table/change_request/${SYS_ID}" \
+            -d "$(jq -n \
+              --arg notes "${WORK_NOTE}" \
+              --arg pr_url "${PR_URL}" \
+              '{ work_notes: $notes, u_github_pr_url: $pr_url }')"
+
+      # ── 5. Comment on the PR ───────────────────────────────────────────────
+      - name: Post PR comment
+        env:
+          GH_TOKEN:   ${{ secrets.GH_TOKEN }}
+          REPO:       ${{ github.repository }}
+          PR_NUMBER:  ${{ steps.payload.outputs.pr_number }}
+          CR_NUMBER:  ${{ steps.snow.outputs.cr_number }}
+          SYS_ID:     ${{ steps.snow.outputs.sys_id }}
+          SNOW_INSTANCE: ${{ secrets.SNOW_INSTANCE }}
+        run: |
+          SNOW_URL="https://${SNOW_INSTANCE}.service-now.com/nav_to.do?uri=change_request.do?sys_id=${SYS_ID}"
+          BODY=$(jq -n \
+            --arg body "## 🎫 ServiceNow Change Request Created\n\n| Field | Value |\n|---|---|\n| **Change Request** | \`${CR_NUMBER}\` |\n| **ServiceNow Link** | ${SNOW_URL} |\n| **Status** | ⏳ Pending approval from CCoE + Government POC |\n\n> Merge to \`main\` is **blocked** until ServiceNow approval is received." \
+            '{body: $body}')
+          curl --fail-with-body -s -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${REPO}/issues/${PR_NUMBER}/comments" \
+            -d "${BODY}"

@@ -1,0 +1,134 @@
+name: ServiceNow – Approval Callback
+
+# ServiceNow calls back GitHub via the repository_dispatch API:
+#   POST https://api.github.com/repos/{owner}/{repo}/dispatches
+#   {
+#     "event_type": "snow-approval-decision",
+#     "client_payload": {
+#       "pr_number":              "42",
+#       "sha":                    "<commit-sha>",
+#       "decision":               "approved" | "rejected",
+#       "reason":                 "Approved by CCoE",
+#       "change_request_number":  "CHG0012345",
+#       "change_request_sys_id":  "<sys_id>"
+#     }
+#   }
+on:
+  repository_dispatch:
+    types: [snow-approval-decision]
+
+permissions:
+  contents: read
+  pull-requests: write
+  statuses: write
+
+jobs:
+  process-decision:
+    name: Process ServiceNow Approval Decision
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Validate required fields ───────────────────────────────────────
+      - name: Validate payload
+        env:
+          PR_NUMBER: ${{ github.event.client_payload.pr_number }}
+          SHA:       ${{ github.event.client_payload.sha }}
+          DECISION:  ${{ github.event.client_payload.decision }}
+        run: |
+          if [[ -z "${PR_NUMBER}" || -z "${SHA}" || -z "${DECISION}" ]]; then
+            echo "ERROR: client_payload must include pr_number, sha, and decision."
+            exit 1
+          fi
+          if [[ "${DECISION}" != "approved" && "${DECISION}" != "rejected" ]]; then
+            echo "ERROR: decision must be 'approved' or 'rejected', got: ${DECISION}"
+            exit 1
+          fi
+          echo "Processing ServiceNow decision: ${DECISION} for PR #${PR_NUMBER} @ ${SHA}"
+
+      # ── 2. Update GitHub commit status ────────────────────────────────────
+      - name: Update commit status
+        env:
+          GH_TOKEN:   ${{ secrets.GH_TOKEN }}
+          REPO:       ${{ github.repository }}
+          SHA:        ${{ github.event.client_payload.sha }}
+          DECISION:   ${{ github.event.client_payload.decision }}
+          CR_NUMBER:  ${{ github.event.client_payload.change_request_number }}
+          REASON:     ${{ github.event.client_payload.reason }}
+          SNOW_INSTANCE: ${{ secrets.SNOW_INSTANCE }}
+          CR_SYS_ID:  ${{ github.event.client_payload.change_request_sys_id }}
+        run: |
+          if [[ "${DECISION}" == "approved" ]]; then
+            STATE="success"
+            DESCRIPTION="ServiceNow ${CR_NUMBER}: Approved for production deployment"
+          else
+            STATE="failure"
+            DESCRIPTION="ServiceNow ${CR_NUMBER}: Change Request rejected – ${REASON}"
+          fi
+
+          TARGET_URL="https://${SNOW_INSTANCE}.service-now.com/nav_to.do?uri=change_request.do?sys_id=${CR_SYS_ID}"
+
+          curl --fail-with-body -s -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${REPO}/statuses/${SHA}" \
+            -d "$(jq -n \
+              --arg state       "${STATE}" \
+              --arg description "${DESCRIPTION}" \
+              --arg target_url  "${TARGET_URL}" \
+              '{
+                state:       $state,
+                context:     "snow-approval-status",
+                description: $description,
+                target_url:  $target_url
+              }')"
+          echo "Commit status set to: ${STATE}"
+
+      # ── 3. Post PR comment with outcome ───────────────────────────────────
+      - name: Post PR comment – Approved
+        if: github.event.client_payload.decision == 'approved'
+        env:
+          GH_TOKEN:    ${{ secrets.GH_TOKEN }}
+          REPO:        ${{ github.repository }}
+          PR_NUMBER:   ${{ github.event.client_payload.pr_number }}
+          CR_NUMBER:   ${{ github.event.client_payload.change_request_number }}
+          CR_SYS_ID:   ${{ github.event.client_payload.change_request_sys_id }}
+          REASON:      ${{ github.event.client_payload.reason }}
+          SNOW_INSTANCE: ${{ secrets.SNOW_INSTANCE }}
+        run: |
+          SNOW_URL="https://${SNOW_INSTANCE}.service-now.com/nav_to.do?uri=change_request.do?sys_id=${CR_SYS_ID}"
+          BODY=$(jq -n \
+            --arg cr "${CR_NUMBER}" \
+            --arg url "${SNOW_URL}" \
+            --arg reason "${REASON}" \
+            '{body: "## ✅ Approved for Production Deployment\n\n| Field | Value |\n|---|---|\n| **Change Request** | `\($cr)` |\n| **ServiceNow Record** | \($url) |\n| **Approval Notes** | \($reason) |\n\nThis PR has been **approved** in ServiceNow. The `snow-approval-status` check is now passing.\nYou may merge this PR to trigger the production deployment pipeline."}')
+          curl --fail-with-body -s -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${REPO}/issues/${PR_NUMBER}/comments" \
+            -d "${BODY}"
+
+      - name: Post PR comment – Rejected
+        if: github.event.client_payload.decision == 'rejected'
+        env:
+          GH_TOKEN:   ${{ secrets.GH_TOKEN }}
+          REPO:       ${{ github.repository }}
+          PR_NUMBER:  ${{ github.event.client_payload.pr_number }}
+          CR_NUMBER:  ${{ github.event.client_payload.change_request_number }}
+          CR_SYS_ID:  ${{ github.event.client_payload.change_request_sys_id }}
+          REASON:     ${{ github.event.client_payload.reason }}
+          SNOW_INSTANCE: ${{ secrets.SNOW_INSTANCE }}
+        run: |
+          SNOW_URL="https://${SNOW_INSTANCE}.service-now.com/nav_to.do?uri=change_request.do?sys_id=${CR_SYS_ID}"
+          BODY=$(jq -n \
+            --arg cr "${CR_NUMBER}" \
+            --arg url "${SNOW_URL}" \
+            --arg reason "${REASON}" \
+            '{body: "## ❌ Production Deployment Rejected\n\n| Field | Value |\n|---|---|\n| **Change Request** | `\($cr)` |\n| **ServiceNow Record** | \($url) |\n| **Rejection Reason** | \($reason) |\n\nThis PR has been **rejected** in ServiceNow. The `snow-approval-status` check is now **failing**.\nMerge to `main` is blocked. Please address the concerns raised and re-open a new Change Request cycle."}')
+          curl --fail-with-body -s -X POST \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${REPO}/issues/${PR_NUMBER}/comments" \
+            -d "${BODY}"

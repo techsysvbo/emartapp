@@ -1,0 +1,127 @@
+name: PR Validation
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+  security-events: write   # required for CodeQL to upload results
+
+concurrency:
+  group: pr-ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # ── Node.js API ──────────────────────────────────────────────────────────────
+  validate-node:
+    name: Validate Node.js API
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: nodeapi
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+          cache: npm
+          cache-dependency-path: nodeapi/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline
+
+      - name: Lint
+        run: npm run lint --if-present
+
+      - name: Unit tests
+        run: npm test --if-present
+
+  # ── Angular Client ───────────────────────────────────────────────────────────
+  validate-angular:
+    name: Validate Angular Client
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --prefer-offline
+
+      - name: Lint
+        run: npm run lint --if-present
+
+      - name: Build (production)
+        run: npm run build -- --configuration production
+
+  # ── Java API ─────────────────────────────────────────────────────────────────
+  validate-java:
+    name: Validate Java API
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: javaapi
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: temurin
+          cache: maven
+
+      - name: Build & test
+        run: mvn --batch-mode --no-transfer-progress clean verify
+
+  # ── CodeQL Security Scan ─────────────────────────────────────────────────────
+  codeql:
+    name: CodeQL Security Scan
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [javascript, java]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java 17 (required for Java CodeQL)
+        if: matrix.language == 'java'
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: temurin
+          cache: maven
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+
+      - name: Build Java (autobuild needs compiled classes)
+        if: matrix.language == 'java'
+        working-directory: javaapi
+        run: mvn --batch-mode --no-transfer-progress clean package -DskipTests
+
+      - name: Autobuild
+        if: matrix.language == 'javascript'
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:${{ matrix.language }}

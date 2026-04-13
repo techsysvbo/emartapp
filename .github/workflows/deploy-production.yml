@@ -1,0 +1,150 @@
+name: Deploy to Production
+
+# Triggered only after a PR with snow-approval-status=success is merged to main.
+# The branch protection rule ensures no merge without that status check.
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false   # never cancel an in-flight production deploy
+
+jobs:
+  # ── Build & push Docker images ────────────────────────────────────────────
+  build-and-push:
+    name: Build & Push Docker Images
+    runs-on: ubuntu-latest
+    outputs:
+      build_number: ${{ steps.meta.outputs.build_number }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set build metadata
+        id: meta
+        run: |
+          BUILD_NUMBER="${GITHUB_SHA::8}"
+          echo "build_number=${BUILD_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "Build number: ${BUILD_NUMBER}"
+
+      - name: Log in to container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.REGISTRY_URL }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+
+      - name: Build & push Angular client image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./client
+          push: true
+          tags: |
+            ${{ secrets.REGISTRY_URL }}/apexrepo/client:${{ steps.meta.outputs.build_number }}
+            ${{ secrets.REGISTRY_URL }}/apexrepo/client:latest
+
+      - name: Build & push Node.js API image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./nodeapi
+          push: true
+          build-args: |
+            MONGO_HOST=emongo
+          tags: |
+            ${{ secrets.REGISTRY_URL }}/apexrepo/main:${{ steps.meta.outputs.build_number }}
+            ${{ secrets.REGISTRY_URL }}/apexrepo/main:latest
+
+      - name: Build & push Java API image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./javaapi
+          push: true
+          tags: |
+            ${{ secrets.REGISTRY_URL }}/apexrepo/books:${{ steps.meta.outputs.build_number }}
+            ${{ secrets.REGISTRY_URL }}/apexrepo/books:latest
+
+  # ── Helm rollout ──────────────────────────────────────────────────────────
+  deploy:
+    name: Helm Upgrade – Production
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    environment: production   # requires manual gate in GitHub Environments (optional)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup kubeconfig
+        run: |
+          mkdir -p "${HOME}/.kube"
+          echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > "${HOME}/.kube/config"
+          chmod 600 "${HOME}/.kube/config"
+
+      - name: Helm upgrade
+        env:
+          BUILD_NUMBER: ${{ needs.build-and-push.outputs.build_number }}
+        run: |
+          helm upgrade kubekart kkartchart --install \
+            --namespace kart \
+            --set "kkartcharts-frontend.image.client.tag=${BUILD_NUMBER}" \
+            --set "kkartcharts-backend.image.main.tag=${BUILD_NUMBER}" \
+            --set "kkartcharts-backend.image.books.tag=${BUILD_NUMBER}" \
+            --atomic \
+            --timeout 10m
+
+      - name: Verify rollout
+        run: |
+          kubectl rollout status deployment --namespace kart --timeout=5m
+
+  # ── Notify ServiceNow of successful deployment ────────────────────────────
+  notify-snow:
+    name: Notify ServiceNow – Deployment Complete
+    needs: [build-and-push, deploy]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Update ServiceNow Change Request state
+        env:
+          SNOW_INSTANCE: ${{ secrets.SNOW_INSTANCE }}
+          SNOW_USERNAME: ${{ secrets.SNOW_USERNAME }}
+          SNOW_PASSWORD: ${{ secrets.SNOW_PASSWORD }}
+          BUILD_STATUS:  ${{ needs.deploy.result }}
+          SHA:           ${{ github.sha }}
+          REPO:          ${{ github.repository }}
+          RUN_URL:       ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [[ "${BUILD_STATUS}" == "success" ]]; then
+            CLOSE_CODE="successful"
+            CLOSE_NOTES="Production deployment completed successfully.\nCommit: ${SHA}\nRepository: ${REPO}\nWorkflow run: ${RUN_URL}"
+            STATE_VALUE="3"   # Closed
+          else
+            CLOSE_CODE="unsuccessful"
+            CLOSE_NOTES="Production deployment FAILED.\nCommit: ${SHA}\nRepository: ${REPO}\nWorkflow run: ${RUN_URL}"
+            STATE_VALUE="3"   # Still close the CR but mark as unsuccessful
+          fi
+
+          # Look up the Change Request by the GitHub commit SHA stored in work_notes
+          QUERY_RESPONSE=$(curl --fail-with-body -s \
+            -u "${SNOW_USERNAME}:${SNOW_PASSWORD}" \
+            -H "Accept: application/json" \
+            "https://${SNOW_INSTANCE}.service-now.com/api/now/table/change_request?sysparm_query=work_notesLIKE${SHA}&sysparm_fields=sys_id,number&sysparm_limit=1")
+
+          SYS_ID=$(echo "${QUERY_RESPONSE}" | jq -r '.result[0].sys_id // empty')
+
+          if [[ -n "${SYS_ID}" ]]; then
+            curl --fail-with-body -s -X PATCH \
+              -u "${SNOW_USERNAME}:${SNOW_PASSWORD}" \
+              -H "Content-Type: application/json" \
+              -H "Accept: application/json" \
+              "https://${SNOW_INSTANCE}.service-now.com/api/now/table/change_request/${SYS_ID}" \
+              -d "$(jq -n \
+                --arg state "${STATE_VALUE}" \
+                --arg code  "${CLOSE_CODE}" \
+                --arg notes "${CLOSE_NOTES}" \
+                '{ state: $state, close_code: $code, close_notes: $notes }')"
+            echo "ServiceNow Change Request ${SYS_ID} updated to state ${STATE_VALUE}."
+          else
+            echo "WARNING: Could not find ServiceNow Change Request for commit ${SHA}. Skipping update."
+          fi
