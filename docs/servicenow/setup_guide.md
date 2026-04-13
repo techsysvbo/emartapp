@@ -42,7 +42,7 @@ Navigate to **System Properties > All Properties** and create:
 
 | Property name                          | Value                          | Description                             |
 |----------------------------------------|--------------------------------|-----------------------------------------|
-| `x_github_snow.github_token`           | `ghp_xxx…`  (GitHub PAT)       | GitHub Personal Access Token with `repo` scope (used for `repository_dispatch` + PR comments) |
+| `x_github_snow.github_token`           | `github_pat_xxx…` (Fine-grained PAT) | GitHub Fine-grained Personal Access Token with minimal permissions: Contents (Read), Pull requests (Write), Commit statuses (Write) – used for `repository_dispatch` + PR comments |
 | `x_github_snow.approver_group_sys_id`  | `<sys_id of approver group>`   | sys_id of the assignment group (e.g., CCoE + Government POC) |
 
 > **Security**: Mark `x_github_snow.github_token` as **Private** so it is
@@ -192,7 +192,7 @@ Navigate to **System Notification > Email > Notifications** and create:
 
 ### GitHub PAT for ServiceNow (outbound callbacks)
 
-1. In GitHub, create a **Fine-grained Personal Access Token** (or Classic PAT):
+1. In GitHub, create a **Fine-grained Personal Access Token**:
    - Repo access: `techsysvbo/emartapp`
    - Permissions:
      - `Contents: Read` (for `repository_dispatch`)

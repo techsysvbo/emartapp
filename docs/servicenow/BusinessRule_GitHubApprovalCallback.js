@@ -3,8 +3,8 @@
  * ────────────────────────────────────────────────────
  * Table:     change_request
  * When:      After update
- * Condition: current.state.changesTo(3) || current.state.changesTo(4)
- *            (3 = Closed / Implement, 4 = Review)
+ * Condition: current.state.changesTo(3) || current.state.changesTo(-4)
+ *            (3 = Closed / Implement, -4 = Cancelled)
  *            AND current.u_github_pr_number != ''
  *
  * Fires when a Change Request that originated from GitHub is moved to

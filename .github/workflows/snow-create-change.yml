@@ -78,7 +78,7 @@ jobs:
           echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
           echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
 
-      # ── 3. POST to ServiceNow Table API ───────────────────────────────────
+      # ── 3. POST to ServiceNow custom Scripted REST API ────────────────────
       - name: Create Change Request in ServiceNow
         id: snow
         env:
@@ -91,7 +91,7 @@ jobs:
             -u "${SNOW_USERNAME}:${SNOW_PASSWORD}" \
             -H "Content-Type: application/json" \
             -H "Accept: application/json" \
-            "https://${SNOW_INSTANCE}.service-now.com/api/now/table/change_request" \
+            "https://${SNOW_INSTANCE}.service-now.com/api/x_github_snow/github_integration/change_request" \
             -d "${PAYLOAD}")
 
           SYS_ID=$(echo "${RESPONSE}" | jq -r '.result.sys_id // empty')
